@@ -1,0 +1,11 @@
+# local configuration and runtime data
+config.toml
+data/
+watchdog/watchdog.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

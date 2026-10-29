@@ -1,0 +1,12 @@
+[project]
+name = "gpu-ops-monitor"
+version = "1.0.0"
+description = "Self-healing monitor for GPU inference servers: auto-repair, an LLM ops agent, then page the owner"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ciprian Tuzaru" }]
+dependencies = []  # stdlib only; pytest is needed only for the tests
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

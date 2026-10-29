@@ -1,0 +1,231 @@
+# Example configuration for gpu-ops-monitor. Copy it to config.toml and replace the placeholder values.
+# Addresses use the documentation ranges (192.0.2.0/24, 198.51.100.0/24); nothing here is a real host.
+# Durations: *_s = seconds, *_min = minutes, *_h = hours.
+
+[monitor]
+interval_s = 60                     # one round of checks per minute
+data_dir = "./data"                 # state, events, log, agent logs; $MONITOR_DIR overrides it
+dashboard_host = "127.0.0.1"        # bind address of the dashboard (keep it local or on a private network)
+dashboard_port = 8198
+dashboard_url = "http://monitor.example.lan/"   # the link in notifications and in the agent's prompt
+
+[notify]
+# kind = "ntfy"    -> POST {"topic", "title", "message", "priority", "tags", "click"} to the server root
+# kind = "webhook" -> POST the same JSON without "topic" to `url`
+# kind = "console" -> print to stdout (used by the demo)
+kind = "ntfy"
+url = "https://ntfy.example.com"     # $MONITOR_NOTIFY_URL overrides it
+topic_env = "MONITOR_NTFY_TOPIC"     # the topic is read from this environment variable...
+# topic_file = "C:/ProgramData/gpu-ops-monitor/ntfy_topic.txt"   # ...or from a file only admins can read
+
+[escalation]
+bad_rounds_to_alert = 2      # bad rounds in a row before anything happens (and good rounds before "working again")
+window_rounds = 10           # a check that is bad in `bad_in_window` of the last `window_rounds` is "unstable"
+bad_in_window = 4
+repairs_per_hour = 3         # tier 1: model-free repair, at most 3 per check per hour...
+repair_pause_s = 180         # ...at least 3 min apart (the service needs time to come up)
+agent_after_error_s = 300    # tier 2: the LLM agent after 5 min of an error...
+agent_after_warning_s = 900  # ...or 15 min of a warning (an unstable check goes at once)
+owner_after_agent_s = 1200   # tier 3: page the owner 20 min after the agent, if it is still not fixed
+
+[agent]
+# Tier 2 is optional: enabled = false (or no command) means tier 3 follows tier 1 directly, with the reason.
+# The command gets the escalation text + the built-in ops prompt in place of "{prompt}" (or as the last argument).
+# Caps: one run at a time, max_runs_per_day, killed after max_runtime_min. The monitor does not sandbox the agent:
+# give the command only the permissions you want it to have.
+enabled = true
+command = ["claude", "-p", "{prompt}"]
+workdir = "."
+max_runs_per_day = 6
+max_runtime_min = 30
+env_remove = []              # environment variables the agent must not inherit
+# prompt_file = "agent_prompt.md"
+
+# Optional hand-off: if an interactive operator session is open (it touches heartbeat_file at least every
+# fresh_s seconds), the escalation is appended to inbox_file (JSON lines) instead of starting a headless agent.
+[agent.session]
+heartbeat_file = ""
+inbox_file = ""
+fresh_s = 180
+
+[maintenance]
+# `python monitor.py maintenance gpu-box 30 driver update` mutes every check of the group for 30 min.
+groups = { "workstation" = ["comfy_local", "tts_local", "queue_worker", "gpu_local", "disk_local", "ram_local", "driver_local"], "gpu-box" = ["gpu_box", "comfy_box", "gpu_box_state", "share_box", "backup_box"] }
+# A flag file the remote host's own maintenance script writes; while it exists (and is younger than flag_max_h)
+# the check is in maintenance.
+flag_file = '\\192.0.2.10\comfyui\user\maintenance.txt'
+flag_check = "comfy_box"
+flag_max_h = 3
+
+[hosts.gpu-box]
+address = "192.0.2.10"              # primary route (LAN)
+fallback_address = "198.51.100.10"  # optional second route to the same machine (e.g. VPN); uses the primary host key
+user = "Administrator"              # SSH key authentication only (BatchMode)
+
+# ---------------------------------------------------------------- the machine that runs the monitor
+
+[[checks]]
+id = "comfy_local"
+group = "Workstation"
+name = "ComfyUI (:8188)"
+type = "comfyui"                    # /queue, /system_stats, /history: down, stuck job, dead queue thread, GPU errors
+url = "http://127.0.0.1:8188"
+fix = "Restart it with the ComfyUI scheduled task; if it listens but does not answer, stop the PID on 8188."
+[checks.repair]
+refuse_if_listening = 8188          # something holds the port but does not answer: leave it to the agent/owner
+command = ["schtasks", "/run", "/tn", "ComfyUI"]
+label = "the ComfyUI task"
+
+[[checks]]
+id = "tts_local"
+group = "Workstation"
+name = "TTS server (:8191)"
+type = "http"                       # any JSON endpoint: up = answers; a list shows its length
+url = "http://127.0.0.1:8191/voices"
+fix = "schtasks /run /tn TTS-Server"
+[checks.repair]
+refuse_if_listening = 8191
+command = ["schtasks", "/run", "/tn", "TTS-Server"]
+label = "the TTS-Server task"
+
+[[checks]]
+id = "queue_worker"
+group = "Workstation"
+name = "Queue worker"
+type = "scheduled_task"             # Windows: the task must be in the Running state
+task = '\services\queue-worker'
+fix = 'schtasks /run /tn \services\queue-worker'
+[checks.repair]
+refuse_if_ok = true                 # re-check right before the repair
+command = ["schtasks", "/run", "/tn", '\services\queue-worker']
+label = "the queue-worker task"
+
+[[checks]]
+id = "gpu_local"
+group = "Workstation"
+name = "GPU"
+type = "gpu"                        # nvidia-smi: temperature, power, utilization, VRAM
+max_temp_c = 87
+fix = "nvidia-smi: see what runs; check the airflow."
+
+[[checks]]
+id = "disk_local"
+group = "Workstation"
+name = "Disks"
+type = "disks"
+paths = { C = 'C:\', D = 'D:\' }
+warn_gb = 30
+error_gb = 10
+fix = "Move finished outputs to the archive and empty the caches."
+
+[[checks]]
+id = "ram_local"
+group = "Workstation"
+name = "RAM"
+type = "ram"                        # Windows: GlobalMemoryStatusEx; warns after `rounds` low rounds in a row
+min_free_gb = 3
+rounds = 3
+fix = "Task Manager -> Memory: what holds the RAM. Free ComfyUI (POST /free) or stop what is idle."
+# A program that legitimately fills the RAM while it works: no alert while it works, an error if it looks stuck.
+# [checks.heavy_job]
+# name = "the large TTS model"
+# status_url = "http://127.0.0.1:8191/gpu"     # answers {"engine": "<name>"}
+# queue_url = "http://127.0.0.1:8191/queue"    # answers [{"id": "...", "state": "running"}, ...]
+# engine = "large-tts"
+# stuck_min = 30
+
+[[checks]]
+id = "driver_local"
+group = "Workstation"
+name = "Video driver"
+type = "driver_resets"              # Windows: nvlddmkm 153 / Display 4101 (TDR) in the last hour
+fix = "The driver reset (TDR): the job running at that moment failed; check ComfyUI/TTS and resubmit it."
+
+# ---------------------------------------------------------------- the second GPU machine (runs the watchdog)
+
+[[checks]]
+id = "gpu_box"
+group = "GPU box"
+name = "GPU box (SSH + GPU)"
+type = "gpu"
+host = "gpu-box"                    # nvidia-smi over SSH; only the fallback route answering = warning
+max_temp_c = 87
+min_power_limit_w = 60              # laptops lower the power limit when the airflow is blocked
+fix = "Is it on and on the network? A lowered power limit = blocked airflow under the laptop."
+
+[[checks]]
+id = "comfy_box"
+group = "GPU box"
+name = "ComfyUI on the GPU box (:8189)"
+type = "comfyui"
+url = "http://192.0.2.10:8189"
+fallback_url = "http://198.51.100.10:8189"
+fix = "Save the queue with comfy_queue.py, restart the server, then restore the queue with the same prompt ids."
+[checks.repair]
+host = "gpu-box"
+refuse_if_listening = 8189
+command = "schtasks /run /tn ComfyUI-Server"
+label = "the ComfyUI-Server task"
+
+[[checks]]
+id = "gpu_box_state"
+group = "GPU box"
+name = "GPU box: power, driver, watchdog"
+type = "host_state"                 # the state.json written by watchdog/watchdog.ps1, read over SSH
+host = "gpu-box"
+path = 'C:\ProgramData\gpu-ops-watchdog\state.json'
+stale_min = 15
+expected_wu_auoptions = 2           # optional: warn if the Windows Update policy changes
+fix = 'Watchdog: ssh into the box and run "schtasks /run /tn gpu-ops-watchdog". On battery: only a human can help.'
+
+[[checks]]
+id = "share_box"
+group = "GPU box"
+name = "GPU box shares"
+type = "disks"
+paths = { renders = '\\192.0.2.10\renders', models = '\\192.0.2.10\comfyui' }
+warn_gb = 100
+error_gb = 20
+fix = "Reconnect the share with saved credentials."
+
+# ---------------------------------------------------------------- nightly jobs
+
+[[checks]]
+id = "nightly_jobs"
+group = "Nightly"
+name = "Scheduled jobs"
+type = "scheduled_jobs"             # Windows: last run result and age of each task
+every_s = 600
+jobs = [
+  { task = '\git\push', max_age_h = 3, state_file = 'C:\ProgramData\git-push\state.json' },
+  { task = '\backup\daily', max_age_h = 26, state_file = 'C:\ProgramData\backup\state.json' },
+]
+fix = "Get-ScheduledTaskInfo on the task: last result and last run; then its script's log."
+
+[[checks]]
+id = "git_push"
+group = "Nightly"
+name = "Automatic git push"
+type = "git_push_state"
+path = 'C:\ProgramData\git-push\state.json'
+stale_h = 26
+fix = "A rejected branch = diverged history, resolve by hand (no force-push); no push at all = credentials or network."
+
+[[checks]]
+id = "backup"
+group = "Nightly"
+name = "Backup"
+type = "backup_state"
+path = 'C:\ProgramData\backup\state.json'
+stale_h = 36
+fix = "The backup state file and log; is the backup disk connected?"
+
+[[checks]]
+id = "backup_box"
+group = "Nightly"
+name = "Backup on the GPU box"
+type = "backup_state"
+host = "gpu-box"
+path = 'C:\ProgramData\backup\state.json'
+every_s = 600
+fix = 'ssh into the box: type C:\ProgramData\backup\state.json (the error is there).'
