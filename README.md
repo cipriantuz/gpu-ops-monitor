@@ -1,12 +1,13 @@
 # gpu-ops-monitor
 
-A self-healing monitor for a small fleet of GPU inference servers (ComfyUI, a TTS server, the GPUs, disks, RAM,
-driver resets, backups and scheduled jobs). Every minute it runs all its checks; a problem first gets a
-**model-free repair**, then an **LLM ops agent**, and only then **pages the owner**. A watchdog on a second
-machine pages the owner if the main machine, and with it the monitor, goes down.
+This is a self-healing monitor for the GPU inference servers I run on my two Windows machines. A problem first
+gets a model-free repair, then an LLM ops agent, and only then pages me. I built it this way after a night when the
+inference server on my second machine stayed down for about five hours (the story is further down).
 
-It is a single stdlib-only Python file plus a PowerShell watchdog, built for and run on two Windows GPU machines.
-This repository is the public, config-driven version of that monitor, with a demo mode that needs no GPU.
+Every minute it checks ComfyUI, a TTS server, the GPUs, disks, RAM, driver resets, backups and scheduled jobs. A
+watchdog on the second machine pages me if the main machine goes down and takes the monitor with it. The monitor
+itself is a single stdlib-only Python file, and the watchdog is a PowerShell script. This repository is the public,
+config-driven version of the monitor I run, with a demo mode that needs no GPU.
 
 ![Dashboard during the demo: one problem, the agent called, the owner paged](docs/dashboard.png)
 
@@ -29,12 +30,12 @@ flowchart TD
     W["Watchdog on the second machine, every 5 min"] -. "monitor down or stuck for 10 min" .-> P
 ```
 
-All alerts of one round go out as one message (a dead machine is one notification, not four). State survives a
+All alerts from one round go out as one message (a dead machine is one notification, not four). State survives a
 restart, so a restart neither repeats a page nor forgets one.
 
-## Quickstart: the demo (no GPU, no config)
+## Try the demo (no GPU, no config)
 
-Requires Python 3.11+ and nothing else.
+You need Python 3.11+ and nothing else.
 
 ```
 git clone <this repo> gpu-ops-monitor
@@ -42,10 +43,10 @@ cd gpu-ops-monitor
 python monitor.py demo          # open http://127.0.0.1:8198 while it runs
 ```
 
-The demo runs the real engine (tracker, repairs, agent tier, notifications, dashboard) against simulated probes,
-with every threshold divided by 30, so one round is 2 s and the whole story takes about two minutes. The agent is
-`demo_agent.py`, a stand-in started exactly like a real agent command. Notifications are printed instead of sent.
-Real output from one run (some event lines omitted, the temp path shortened):
+The demo runs the real engine (tracker, repairs, agent tier, notifications, dashboard) against simulated probes.
+Every threshold is divided by 30, so one round is 2 s and the whole story takes about two minutes. The agent is
+`demo_agent.py`, a stand-in that the monitor starts exactly like a real agent command, and notifications are printed
+instead of sent. Here's real output from one run (I left out some event lines and shortened the temp path):
 
 ```
 demo: dashboard http://127.0.0.1:8198/ · data <temp>\gpu-ops-demo-0oprpiqm · one round = 2 s, 64 rounds
@@ -67,9 +68,9 @@ demo: dashboard http://127.0.0.1:8198/ · data <temp>\gpu-ops-demo-0oprpiqm · o
               | 52 °C · 31/115 W · 4% · VRAM 1.2/16.0 GB · via primary
 ```
 
-Three scenarios, one per tier: a crash that a restart fixes (tier 1, nobody woken), a hung process that the
-repair refuses to kill and the agent fixes (tier 2), and a machine off the network that only a human can fix
-(tier 3, then "working again" when it returns). `python monitor.py demo --no-wait` exits at the end instead of
+There are three scenarios, one per tier: a crash that a restart fixes (tier 1, nobody gets woken up), a hung process
+that the repair refuses to kill and the agent fixes (tier 2), and a machine off the network that only a human can fix
+(tier 3, then "working again" when it comes back). `python monitor.py demo --no-wait` exits at the end instead of
 keeping the page up.
 
 ## Using it for real
@@ -86,9 +87,9 @@ python monitor.py test-escalation            # test the hand-off to an open oper
 
 ### Configuration
 
-Everything lives in `config.toml` ([config.example.toml](config.example.toml) documents every key). Credentials never
-go in the file: the notification topic comes from `MONITOR_NTFY_TOPIC` (or a file only admins can read) and is
-masked in every error message; `MONITOR_NOTIFY_URL` and `MONITOR_DIR` override the URL and the data directory.
+Everything lives in `config.toml`, and [config.example.toml](config.example.toml) documents every key. Credentials
+never go in the file: the notification topic comes from `MONITOR_NTFY_TOPIC` (or a file only admins can read) and is
+masked in every error message. `MONITOR_NOTIFY_URL` and `MONITOR_DIR` override the URL and the data directory.
 
 | Section | What it sets |
 |---|---|
@@ -115,26 +116,26 @@ Check types:
 | `scheduled_jobs` | a nightly task missed its run, failed, or ran without writing its state file | Windows |
 | `git_push_state`, `backup_state` | the state files of a push job and a backup job: stale, rejected branches, partial errors | local or over SSH |
 
-Any check can take `every_s` to run at most that often (expensive checks). Repairs are a command that starts the
-service and returns (a scheduled task, a service manager), run locally or over SSH, with `refuse_if_listening`
-(something still holds the port: do not start a second copy, leave the hung one to the agent or the owner) or
-`refuse_if_ok` (re-check right before acting).
+Any check can take `every_s` so it runs at most that often (useful for expensive checks). A repair is a command that
+starts the service and returns (a scheduled task, a service manager), run locally or over SSH. It can also take
+`refuse_if_listening` (something still holds the port: don't start a second copy, leave the hung one to the agent or
+the owner) or `refuse_if_ok` (re-check right before acting).
 
 ### The watchdog
 
-[watchdog/](watchdog/) is a PowerShell script for the second machine, run every 5 minutes by a scheduled task that
-needs nobody logged on. It writes the machine's own state (power, battery, driver errors and resets since the
+[watchdog/](watchdog/) is a PowerShell script for the second machine. A scheduled task runs it every 5 minutes, and
+nobody needs to be logged on. It writes the machine's own state (power, battery, driver errors and resets since the
 driver install, pending reboot, Windows Update policy) for the `host_state` check, and it polls the main monitor's
-`/api/status`. If the monitor stays unreachable for 10 minutes, or is stuck (no completed round for 10 minutes)
-for another 10, it pages the owner directly, telling apart "main host offline" from "host up, monitor dead" with a
-ping, and repeats after 1, 2, 4... hours.
-Install: copy `watchdog.example.json` to `watchdog.json`, put the topic in
-`C:\ProgramData\gpu-ops-watchdog\ntfy_topic.txt`, run `install_watchdog.ps1` as Administrator. The dashboard must be
-reachable from that machine: bind `dashboard_host` to a private interface (LAN or
-VPN).
+`/api/status`. If the monitor stays unreachable for 10 minutes, or is stuck (no completed round for 10 minutes) for
+another 10, the watchdog pages the owner directly. It uses a ping to tell "main host offline" apart from "host up,
+monitor dead", and it repeats the page after 1, 2, 4... hours.
 
-`comfy_queue.py` is the companion tool for the dead-queue case: it saves a ComfyUI queue, and after a restart puts
-it back with the same prompt ids, so clients waiting on their results reattach without duplicates.
+To install it, copy `watchdog.example.json` to `watchdog.json`, put the topic in
+`C:\ProgramData\gpu-ops-watchdog\ntfy_topic.txt` and run `install_watchdog.ps1` as Administrator. The dashboard has
+to be reachable from that machine, so bind `dashboard_host` to a private interface (LAN or VPN).
+
+`comfy_queue.py` is the companion tool for the dead-queue case. It saves a ComfyUI queue and, after a restart, puts it
+back with the same prompt ids, so clients waiting on their results reattach without duplicates.
 
 ## Tests and CI
 
@@ -142,11 +143,11 @@ it back with the same prompt ids, so clients waiting on their results reattach w
 uvx pytest            # or: python -m pip install pytest && python -m pytest
 ```
 
-99 test cases (86 test functions), offline: fake HTTP servers, fake SSH and command runners, a fake clock, and the
-demo scenario end to end on a fake clock with the real `demo_agent.py` subprocess. Three tests call real Windows
-APIs (the `wevtutil` query, `GlobalMemoryStatusEx`, the PowerShell task query) and are skipped elsewhere.
-[.github/workflows/ci.yml](.github/workflows/ci.yml) runs the suite on Ubuntu with Python 3.11 and on Windows with
-Python 3.13.
+The suite has 99 test cases (86 test functions) and runs offline: fake HTTP servers, fake SSH and command runners, a
+fake clock, and the demo scenario end to end on a fake clock with the real `demo_agent.py` subprocess. Three tests
+call real Windows APIs (the `wevtutil` query, `GlobalMemoryStatusEx`, the PowerShell task query) and are skipped
+elsewhere. [.github/workflows/ci.yml](.github/workflows/ci.yml) runs the suite on Ubuntu with Python 3.11 and on
+Windows with Python 3.13.
 
 ## Design decisions
 
@@ -154,73 +155,75 @@ Python 3.13.
   deterministic, takes seconds and costs nothing, so it runs at the second bad round, before anything smarter. It
   only acts on errors, never on warnings, and it refuses when something still holds the port: a hung process may be
   mid-job or holding GPU memory, and killing it is a judgment call.
-- **Caps everywhere.** Repairs: at most 3 per check per hour, 3 minutes apart, so a crash loop cannot become a
-  restart loop. Agent: one run at a time, at most 6 runs a day, killed after 30 minutes. The worst case for cost
-  and blast radius is known in advance.
-- **The agent gets data, not instructions.** Text in the escalation comes from other machines and from files other
-  programs write. It is reduced to one line without brackets, backticks, `$` or pipes, length-capped, and
-  introduced as data. The watchdog's free text is mapped to fixed categories; GPU exception messages (chosen by
+- **Caps everywhere.** Repairs: at most 3 per check per hour, 3 minutes apart, so a crash loop can't turn into a
+  restart loop. Agent: one run at a time, at most 6 runs a day, killed after 30 minutes. That way the worst case for
+  cost and blast radius is known in advance.
+- **The agent gets data, not instructions.** Text in the escalation comes from other machines and from files that
+  other programs write. It's reduced to one line without brackets, backticks, `$` or pipes, capped in length, and
+  introduced as data. The watchdog's free text is mapped to fixed categories, and GPU exception messages (chosen by
   whoever submits a job) never leave the check.
 - **Prefer an open session.** If an operator session is open (it touches a heartbeat file), the escalation goes to
-  its inbox: it already has context. Otherwise a headless agent command starts. If neither can run, the owner is
-  paged at once, with the reason.
-- **Wake the owner last, and only once.** 20 minutes after the agent, priority 5. "Auto-repaired" and "working
-  again" go at priority 2. One message per round, one page per episode; a warning that becomes an error pages
-  again, and a new cause inside an alerted episode (a check can return the keys of what broke) opens a new episode
-  instead of being swallowed.
+  its inbox, because that session already has context. Otherwise a headless agent command starts. If neither can
+  run, the owner is paged at once, with the reason.
+- **Wake the owner last, and only once.** The page comes 20 minutes after the agent, at priority 5. "Auto-repaired"
+  and "working again" go at priority 2. One message per round, one page per episode. A warning that becomes an error
+  pages again, and a new cause inside an alerted episode (a check can return the keys of what broke) opens a new
+  episode instead of being swallowed.
 - **Hysteresis.** Two bad rounds before acting, two good rounds before "resolved"; 4 bad rounds out of 10 marks a
   check unstable and escalates it at once; warnings wait 15 minutes before the agent.
-- **Maintenance windows** for a check or a group, from the CLI, from the agent (its prompt says to open one before
-  stopping anything on purpose), or from a flag file the remote host's own maintenance script writes.
-- **A watchdog on a second machine.** The monitor and the agent live on the main machine. If it loses power or
-  hangs, nothing on it can page anyone. The watchdog checks freshness, not just reachability, so it also catches a
-  monitor that answers HTTP but has stopped checking. The two machines watch each other: the monitor reads the
-  watchdog's state, the watchdog reads the monitor's.
+- **Maintenance windows** for a check or a group, opened from the CLI, from the agent (its prompt says to open one
+  before stopping anything on purpose), or from a flag file that the remote host's own maintenance script writes.
+- **A watchdog on a second machine.** The monitor and the agent live on the main machine, so if it loses power or
+  hangs, nothing on it can page anyone. The watchdog checks freshness, not just reachability, which means it also
+  catches a monitor that answers HTTP but has stopped checking. The two machines watch each other: the monitor reads
+  the watchdog's state and the watchdog reads the monitor's.
 - **Stdlib only, one file.** Deployment is a file copy, and nothing breaks when the GPU stack on the same machine
   upgrades its Python packages.
 
 ## The outage behind the tiers
 
-The first version of this monitor was a dashboard plus a phone notification. One night the inference server on
-the second GPU machine went down and stayed down for about five hours; the jobs waiting for it did not run until
-morning. An alert at night waits for a person to wake up. The tiers were added right after: restart what can be
-restarted safely, hand the rest to an agent that can diagnose, and wake the owner only when both have failed. The
-watchdog came with them, because the same reasoning applies to the monitor itself.
+The first version of this monitor was a dashboard plus a phone notification. One night the inference server on my
+second GPU machine went down and stayed down for about five hours, and the jobs waiting for it didn't run until
+morning. An alert at night waits for someone to wake up. So right after that I added the tiers: restart what can be
+restarted safely, hand the rest to an agent that can diagnose, and wake me up only when both have failed. The
+watchdog came at the same time, because the same reasoning applies to the monitor itself.
 
 ## Limitations
 
-- **A generic subset.** The author's own deployment runs 18 checks; `config.example.toml` ships the 15 that make sense outside that setup.
-- **Windows first.** Scheduled tasks, the RAM and driver-reset checks, the `netstat` parsing and the example
-  repairs are Windows-specific. The HTTP, ComfyUI, GPU, disk, SSH and state-file checks are portable, and the test
-  suite runs on Linux.
-- **One owner, one instance.** No on-call rotation, acknowledgements or high availability beyond the watchdog.
-- **The agent is as safe as its command.** The monitor caps how often and how long it runs, not what it may do;
+- The example config is a generic subset. My own deployment runs 18 checks; `config.example.toml` ships the 15 that
+  make sense outside that setup.
+- It's Windows first. Scheduled tasks, the RAM and driver-reset checks, the `netstat` parsing and the example repairs
+  are Windows-specific. The HTTP, ComfyUI, GPU, disk, SSH and state-file checks are portable, and the test suite runs
+  on Linux.
+- One owner, one instance. There's no on-call rotation or acknowledgements, and no high availability beyond the
+  watchdog.
+- The agent is only as safe as its command. The monitor caps how often and how long it runs, not what it may do, so
   give the agent command only the permissions you want it to have.
-- **No authentication on the dashboard.** It binds to localhost by default; publish it only on a private network.
-- **New check types need code**: a function returning `(state, detail)` and one branch in `build_check`.
-- **This is a generalized copy.** The engine, the checks and their tests come from the private deployment; the
-  config loader, the webhook/console notifiers, the operator-session hand-off via a heartbeat file, the watchdog's
-  ping-based host check and the demo are new in this version and have been exercised by the tests and the demo
-  only, not in production. The watchdog scripts have not been run in this form.
+- The dashboard has no authentication. It binds to localhost by default; publish it only on a private network.
+- New check types need code: a function returning `(state, detail)` and one branch in `build_check`.
+- **This is a generalized copy.** The engine, the checks and their tests come from my private deployment. The config
+  loader, the webhook/console notifiers, the operator-session hand-off via a heartbeat file, the watchdog's
+  ping-based host check and the demo are new in this version; they've been exercised by the tests and the demo only,
+  not in production. I haven't run the watchdog scripts in this form.
 
-## How this was built
+## How I built it
 
-Built with AI coding agents (Claude Code), which wrote most of the code. I owned the architecture (the three
-tiers, the caps, the hand-off to an open session, the watchdog on a second machine), the review gates and the
-verification. What was verified, and how:
+I built this with AI coding agents (Claude Code), and they wrote most of the code. My part was the architecture (the
+three tiers, the caps, the hand-off to an open session, the watchdog on a second machine), the review gates and the
+verification. I don't take an agent's "done" at face value, so this is what I checked, and how:
 
-- The test suite (99 cases) passes on Windows with Python 3.13 and on Linux with Python 3.11, three Windows-only
-  tests skipped on Linux.
-- The tests can fail: four deliberate bugs (repair cap off by one, owner paged a minute late, GPU-error threshold
-  raised, the fallback-route warning removed) each broke the suite.
-- Regression tests encode incidents from the private deployment: a dead ComfyUI queue thread that left a job
-  "running" on an idle GPU for almost two hours, a bogus first GPU power reading after idle (588 W at 0%), a second
-  missed job hidden inside an episode already alerted. A review finding (text read from other machines could carry
-  instructions into the agent's prompt) has its own tests.
-- The checks that touch Windows (`wevtutil` query, `GlobalMemoryStatusEx`, the scheduled-task PowerShell) are tested
-  against the real APIs, not only against fakes.
-- The demo was run end to end (output above) and the dashboard screenshot was rendered from it.
-- Before publishing, the code and its git history were searched for private names, hosts, paths and credentials.
+- The test suite (99 cases) passes on Windows with Python 3.13 and on Linux with Python 3.11, with the three
+  Windows-only tests skipped on Linux.
+- The tests can fail. I put four bugs in on purpose (repair cap off by one, owner paged a minute late, GPU-error
+  threshold raised, the fallback-route warning removed), and each one broke the suite.
+- Regression tests encode incidents from my private deployment: a dead ComfyUI queue thread that left a job
+  "running" on an idle GPU for almost two hours, a bogus first GPU power reading after idle (588 W at 0%), and a
+  second missed job hidden inside an episode that had already alerted. A review finding (text read from other
+  machines could carry instructions into the agent's prompt) has its own tests.
+- The checks that touch Windows (the `wevtutil` query, `GlobalMemoryStatusEx`, the scheduled-task PowerShell) are
+  tested against the real APIs, not only against fakes.
+- I ran the demo end to end (that's the output above), and the dashboard screenshot comes from that run.
+- Before publishing, I searched the code and its git history for private names, hosts, paths and credentials.
 
 ## License
 
