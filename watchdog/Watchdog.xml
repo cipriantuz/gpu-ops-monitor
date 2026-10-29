@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- The gpu-ops-watchdog task. Install: install_watchdog.ps1.
+     S4U = runs with nobody logged on, with no window and no stored credentials; every 5 min, also on battery.
+     It runs as the local Administrator account; change UserId if the watchdog should run as another admin. -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Writes this machine's state for the main monitor and pages the owner when the main monitor stops answering. Script: C:\ProgramData\gpu-ops-watchdog\watchdog.ps1</Description>
+    <URI>\gpu-ops-watchdog</URI>
+  </RegistrationInfo>
+  <Principals>
+    <Principal id="Author">
+      <UserId>Administrator</UserId>
+      <LogonType>S4U</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT3M</ExecutionTimeLimit>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+  </Settings>
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT5M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\ProgramData\gpu-ops-watchdog\watchdog.ps1</Arguments>
+    </Exec>
+  </Actions>
+</Task>

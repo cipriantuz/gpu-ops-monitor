@@ -1,0 +1,5 @@
+{
+  "monitor_url": "http://192.0.2.20:8198/api/status",
+  "main_host": "192.0.2.20",
+  "ntfy_url": "https://ntfy.example.com"
+}
