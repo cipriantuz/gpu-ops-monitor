@@ -189,6 +189,7 @@ watchdog came with them, because the same reasoning applies to the monitor itsel
 
 ## Limitations
 
+- **A generic subset.** The author's own deployment runs 18 checks; `config.example.toml` ships the 15 that make sense outside that setup.
 - **Windows first.** Scheduled tasks, the RAM and driver-reset checks, the `netstat` parsing and the example
   repairs are Windows-specific. The HTTP, ComfyUI, GPU, disk, SSH and state-file checks are portable, and the test
   suite runs on Linux.
